@@ -155,9 +155,9 @@ Building on Internet and shipping to AZN are separate capabilities, so they are 
 | Category | Dev on Internet | Ships to AZN | Notes |
 | --- | --- | --- | --- |
 | Frontend / MFEs | 5 of 5 | 5 of 5 | `baseline-single-spa-assets` is excluded: it has no pipeline on either side, so there is nothing to migrate |
-| Backend microservices | 7 of 8 | 0 of 8 | `webcore-kafka-example` is the one outstanding: it still runs the AZN `.gitlab-ci.yml` and has no Internet pipeline. The retired `cet-service` is excluded. None of the eight has a bundle job yet |
+| Backend microservices | 7 of 8 | 0 of 8 | `webcore-kafka-example` is the one outstanding: it still runs the AZN `.gitlab-ci.yml` and has no Internet pipeline. |
 | Shared Java libraries | 0 | 0 | No Internet publish pipeline yet |
-| Infra & internal tooling | 1 of 1 | 1 of 1 | `webcore-compose` |
+| Infra & internal tooling | 1 of 1 | 1 of 1 | All migrated |
 
 Release-to-AZN bundling is live for the MFEs and infra tooling. Backend services and the shared Java libraries still need a bundle job before they can cross the air gap.
 
