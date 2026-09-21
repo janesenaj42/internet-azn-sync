@@ -24,6 +24,7 @@ Scanning on Internet runs on free/OSS substitutes in place of AZN's paid enterpr
 - **SAST (Static Application Security Testing)** scans your own source code — without running it — to catch security bugs like injection flaws, hardcoded secrets, or unsafe API usage before the code ships.
 - **SCA (Software Composition Analysis)** scans your third-party dependencies (npm/Maven packages, base images, etc.) against known vulnerability databases (CVEs) to catch risky or outdated libraries you've pulled in.
 
+Semgrep and Trivy currently write their findings to pipeline artifacts and do not fail the pipeline. Gating is being added per repo, starting with CRITICAL-severity SCA findings.
 ---
  
 ## 2. Synchronization Methodology & Workflow
@@ -42,13 +43,18 @@ flowchart TD
  
     subgraph Internet["🌐 Internet — .gitlab-ci.internet.yml"]
         direction TB
-        I0["Lint"]:::ci --> I1["Build<br/>Gradle / npm"]:::ci
-        I1 --> I2["Semgrep<br/>SAST scan"]:::ci
-        I2 --> I3["Trivy<br/>SCA scan"]:::ci
-        I3 --> I4["Git Bundle<br/>release-bundle CI job"]:::ci
+        subgraph S1["stage: sast-and-test — run in parallel"]
+            direction LR
+            I0["eslint-and-test<br/>lint + unit tests + build → dist/"]:::ci
+            I1["semgrep-sast<br/>SAST scan"]:::ci
+            I2["trivy-sca<br/>SCA scan"]:::ci
+        end
+        S1 --> I3["stage: build<br/>build-image — Docker build + push"]:::ci
+        I3 --> I4["stage: release — SemVer tag only<br/>release-bundle → release-vX.Y.Z.bundle"]:::ci
+        I4 --> I5["release<br/>attach bundle to GitLab Release"]:::ci
     end
  
-    I4 --> H1["Manual transfer via FG from Internet to AZN<br/>(air gap)"]:::human
+    I5 --> H1["Manual transfer via FG from Internet to AZN<br/>(air gap)"]:::human
     H1 --> H2["Run airgap-release-import.sh on AZN"]:::human
     H2 --> A0
  
@@ -68,13 +74,19 @@ flowchart TD
     style Legend fill:#f2f2f2,stroke:#9a9a9a,color:#333333
 ```
 
->[!WARNING]  ⚠️ **Open question:** pls update the mermaid diagram above with the correct ci jobs
+The three `sast-and-test` jobs run in parallel, not in sequence. The build happens inside `eslint-and-test`, which produces the `dist/` that `build-image` consumes. The release stage runs only on a SemVer tag whose commit is on the default branch.
  
 **What `airgap-release-import.sh` does:** 
 - verifies the bundle, commit, and tag validity
 - merges and fast-forwards the validated release into the AZN repository 
  
->[!WARNING]  ⚠️ **Open question:** is `airgap-release-import.sh` repo-agnostic across all 19 repos, or does each repo need its own config? 
+**It is repo-agnostic.** There is one copy, in `webcore-compose/scripts/`, and no repo needs its own config — it reads no config file, no `.env` and no environment variable. The target clone is an argument, the remote defaults to `origin`, and the default branch is auto-detected:
+ 
+```
+airgap-release-import.sh -C ~/repos/<any-repo> release-1.2.0.bundle
+```
+ 
+The one fixed assumption is the tag pattern `^v?[0-9]+\.[0-9]+\.[0-9]+$`, which matches the pattern the release job uses. Releases must stay on plain SemVer tags for the import to work.
  
 ### Why the Git Trees Look Different
  
@@ -102,7 +114,7 @@ AZN only ever receives fast-forwarded commits from a verified bundle — it neve
  
 Versioning is decided on Internet (git tag `v*`) — the artifact that actually ships is always the one rebuilt fresh on AZN, never the one built during Internet CI.
  
->[!WARNING]  ⚠️ **Open question:**using `standard-version` for all repos?
+Releases use **`commit-and-tag-version`**, the maintained fork of `standard-version` (retired upstream in 2022). It is run through `npx`: `npx commit-and-tag-version` for Node repos, `npx commit-and-tag-version --packageFiles build.gradle` for Java services. 14 of the 19 repos document it, including all nine Java services. Java repos must drop the `-SNAPSHOT` suffix first, which the tool does not parse.
  
  
 ---
@@ -114,25 +126,31 @@ Internet-side repos need environment-specific tweaks so builds don't depend on A
 | Area | Internet-side change | Why |
 | --- | --- | --- |
 | CI pipeline config | Separate `.gitlab-ci.internet.yml`, not the shared `ci-templates` include | AZN's `ci-templates` can't resolve outside the internal network |
-| Backend (`build.gradle` / Testcontainers) | Tests run with `-x test` (skipped) | Testcontainers needs a privileged/dind Docker daemon the Internet runner lacks |
+| Backend (`build.gradle` / Testcontainers) | `build.gradle` is **not** edited — an `internet-init.gradle` init-script reroutes resolution; tests run with `-x test` | Testcontainers needs a privileged Docker daemon the Internet runner's socket-binding executor cannot start |
 | Docker / docker-compose | Internal registry hostnames replaced or parameterized via `.env` toggles in `webcore-compose` | Internet runners can't resolve internal DNS (`jfrog.dev.saf`) |
-| Frontend (`.npmrc` / `package-lock.json`) | Internal `jfrog.dev.saf` registry URLs auto-stripped by the bootstrap import script | Prevents leaking internal hostnames into Internet git history |
+| Frontend (`.npmrc` / `package-lock.json`) | `resolved` URLs stripped from the committed lockfile by a pre-commit hook | One lockfile resolves against either registry; a host-only rewrite fails because the internal registry adds a path segment |
  
->[!WARNING]  ⚠️ **Open question:** I dont have access to internet gitlab now nor the claude artifact used to go through the internet dev stuff -- pls fill in where people can find the internet migration guides for `build.gradle`, `docker-compose`, and `.npmrc`. Intention is coz some config methodology stuff can share with other projects, not unique to gc3.
+**Where the migration guides are:** all three live in `webcore-compose/docs/` — `getting-started.md` (Internet-side setup for npm, Gradle and compose), `airgap.md` (the air-gap side and the carry-across) and `troubleshooting.md` (symptom to fix).
+ 
+- **`.npmrc` / `package-lock.json`** — the committed lockfile has its `resolved` URLs stripped, so `npm ci` rebuilds each URL from whichever registry is configured and one lockfile works in both worlds. A host-only rewrite does not work, because the internal registry embeds an extra path segment. Enforced by `npm run lock:normalize` and a pre-commit hook in each frontend repo.
+- **`build.gradle`** — never edited. A Gradle init-script, `internet-init.gradle`, reroutes dependency resolution at invocation time: `./gradlew -I internet-init.gradle --no-daemon clean bootJar -x test`. The committed wrapper keeps pointing at the internal registry, so air-gap builds keep working and the rewrite is never committed.
+- **`docker-compose`** — three `.env` variables switch registries: `WEBCORE_REGISTRY`, `COTS_REGISTRY` and `EJABBERD_REPO`. `EJABBERD_REPO` is a whole image name rather than a prefix, so changing only the two registry variables leaves that one container failing.
  
 ---
  
 ## 4. Current Progress
  
->[!WARNING] ⚠️ **Open question:** pls help confirm the info below then we can un-strike the below statement :(
+GC3 is fully developing on internet now.
 
-~~GC3 is fully developing on internet now.~~
+Building on Internet and shipping to AZN are separate capabilities, so they are counted separately.
 
-| Category | % Done | Status |
-| --- | --- | --- |
-| Frontend / MFEs | 100% | All migrated |
-| Backend microservices | 20% | In progress — `cet-service`, `webcore-kafka-example` still outstanding |
-| Shared Java libraries | 0% | No Internet publish pipeline yet — still outstanding |
-| Infra & internal tooling | 100% |  All migrated |
+| Category | Dev on Internet | Ships to AZN | Notes |
+| --- | --- | --- | --- |
+| Frontend / MFEs | 5 of 5 | 5 of 5 | `baseline-single-spa-assets` is excluded: it has no pipeline on either side, so there is nothing to migrate |
+| Backend microservices | 8 of 8 | 0 of 8 | All build and scan on Internet; none has a `release-bundle` job yet |
+| Shared Java libraries | 0 | 0 | No Internet publish pipeline yet |
+| Infra & internal tooling | 1 of 1 | 1 of 1 | `webcore-compose` |
 
->[!WARNING]  ⚠️ **Open question:** help confirm the above info pls
+Release-to-AZN bundling is live for the MFEs and infra tooling. Backend services and the shared Java libraries still need a `release-bundle` job before they can cross the air gap.
+
+`cet-service` is retired and heading for an archived subgroup, so it is not counted.
