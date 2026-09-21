@@ -45,14 +45,14 @@ flowchart TD
     subgraph Internet["🌐 Internet — .gitlab-ci.internet.yml"]
         direction TB
         P["push / merge request"]:::ci
-        P --> I0["eslint-and-test<br/>ESLint + unit tests + build → dist/"]:::ci
-        P --> I1["semgrep-sast<br/>Semgrep CE — SAST scan"]:::ci
-        P --> I2["trivy-sca<br/>Trivy — SCA scan"]:::ci
-        I0 --> I3["build-image<br/>Docker build + push to registry"]:::ci
+        P --> I0["Lint + unit tests + build"]:::ci
+        P --> I1["Semgrep CE<br/>SAST scan"]:::ci
+        P --> I2["Trivy<br/>SCA scan"]:::ci
+        I0 --> I3["Build image<br/>push to registry"]:::ci
         I1 --> I3
         I2 --> I3
-        I3 --> I4["release-bundle<br/>SemVer tag only → release-vX.Y.Z.bundle"]:::ci
-        I4 --> I5["release<br/>attach the bundle to a GitLab Release"]:::ci
+        I3 --> I4["Git bundle<br/>SemVer tag only"]:::ci
+        I4 --> I5["Attach bundle to<br/>GitLab Release"]:::ci
     end
  
     I5 --> H1["Manual transfer via FG from Internet to AZN<br/>(air gap)"]:::human
@@ -75,7 +75,9 @@ flowchart TD
     style Legend fill:#f2f2f2,stroke:#9a9a9a,color:#333333
 ```
 
-Three stages: `sast-and-test`, `build`, `release`. `eslint-and-test`, `semgrep-sast` and `trivy-sca` share the first stage and run in parallel — `build-image` waits for all three. The build happens inside `eslint-and-test`, which produces the `dist/` that `build-image` consumes. The release stage runs only on a SemVer tag whose commit is on the default branch.
+The lint/test and the two scans share the first stage and run in parallel — the image build waits for all three. The bundle job runs only on a SemVer tag whose commit is on the default branch.
+ 
+Job names differ by stack. Frontend: `eslint-and-test`, `semgrep-sast`, `trivy-sca`, `build-image`, `release-bundle`, `release`. Backend: `build-jar`, `build-image`, `sast-semgrep`, `sca-deps`, `sca-config`, `sca-secret` — no bundle job yet.
  
 **What `airgap-release-import.sh` does:** 
 - verifies the bundle, commit, and tag validity
@@ -153,10 +155,12 @@ Building on Internet and shipping to AZN are separate capabilities, so they are 
 | Category | Dev on Internet | Ships to AZN | Notes |
 | --- | --- | --- | --- |
 | Frontend / MFEs | 5 of 5 | 5 of 5 | `baseline-single-spa-assets` is excluded: it has no pipeline on either side, so there is nothing to migrate |
-| Backend microservices | 8 of 8 | 0 of 8 | All build and scan on Internet; none has a `release-bundle` job yet |
+| Backend microservices | 7 of 7 | 0 of 7 | All build and scan on Internet; none has a bundle job yet. `webcore-spring-service` (an example app) and the retired `cet-service` are excluded; `webcore-kafka-example` was not available to check |
 | Shared Java libraries | 0 | 0 | No Internet publish pipeline yet |
 | Infra & internal tooling | 1 of 1 | 1 of 1 | `webcore-compose` |
 
-Release-to-AZN bundling is live for the MFEs and infra tooling. Backend services and the shared Java libraries still need a `release-bundle` job before they can cross the air gap.
+Release-to-AZN bundling is live for the MFEs and infra tooling. Backend services and the shared Java libraries still need a bundle job before they can cross the air gap.
 
 `cet-service` is retired and heading for an archived subgroup, so it is not counted.
+
+These counts are read from each repo's CI configuration. They say the pipeline is in place, not that its last run was green.
