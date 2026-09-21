@@ -148,7 +148,7 @@ Internet-side repos need environment-specific tweaks so builds don't depend on A
  
 ## 4. Current Progress
  
-GC3 develops on Internet: developers run the services locally, push, and the Internet pipeline runs the lint, test, SAST, SCA and image jobs. One repo is outstanding, `webcore-kafka-example`.
+GC3 develops on Internet. Pushing to a migrated repo runs the Internet pipeline's lint, test, SAST, SCA and image jobs. Local builds take the same route as CI: the `internet-init.gradle` init-script points dependency resolution at Maven Central and the group Maven registry, using a Deploy Token or PAT with `read_package_registry` where CI uses its job token. One repo is outstanding, `webcore-kafka-example`.
 
 Building on Internet and shipping to AZN are separate capabilities, so they are counted separately.
 
