@@ -25,6 +25,7 @@ Scanning on Internet runs on free/OSS substitutes in place of AZN's paid enterpr
 - **SCA (Software Composition Analysis)** scans your third-party dependencies (npm/Maven packages, base images, etc.) against known vulnerability databases (CVEs) to catch risky or outdated libraries you've pulled in.
 
 Semgrep and Trivy currently write their findings to pipeline artifacts and do not fail the pipeline. Gating is being added per repo, starting with CRITICAL-severity SCA findings.
+
 ---
  
 ## 2. Synchronization Methodology & Workflow
@@ -43,15 +44,15 @@ flowchart TD
  
     subgraph Internet["🌐 Internet — .gitlab-ci.internet.yml"]
         direction TB
-        subgraph S1["stage: sast-and-test — run in parallel"]
-            direction LR
-            I0["eslint-and-test<br/>lint + unit tests + build → dist/"]:::ci
-            I1["semgrep-sast<br/>SAST scan"]:::ci
-            I2["trivy-sca<br/>SCA scan"]:::ci
-        end
-        S1 --> I3["stage: build<br/>build-image — Docker build + push"]:::ci
-        I3 --> I4["stage: release — SemVer tag only<br/>release-bundle → release-vX.Y.Z.bundle"]:::ci
-        I4 --> I5["release<br/>attach bundle to GitLab Release"]:::ci
+        P["push / merge request"]:::ci
+        P --> I0["eslint-and-test<br/>ESLint + unit tests + build → dist/"]:::ci
+        P --> I1["semgrep-sast<br/>Semgrep CE — SAST scan"]:::ci
+        P --> I2["trivy-sca<br/>Trivy — SCA scan"]:::ci
+        I0 --> I3["build-image<br/>Docker build + push to registry"]:::ci
+        I1 --> I3
+        I2 --> I3
+        I3 --> I4["release-bundle<br/>SemVer tag only → release-vX.Y.Z.bundle"]:::ci
+        I4 --> I5["release<br/>attach the bundle to a GitLab Release"]:::ci
     end
  
     I5 --> H1["Manual transfer via FG from Internet to AZN<br/>(air gap)"]:::human
@@ -74,7 +75,7 @@ flowchart TD
     style Legend fill:#f2f2f2,stroke:#9a9a9a,color:#333333
 ```
 
-The three `sast-and-test` jobs run in parallel, not in sequence. The build happens inside `eslint-and-test`, which produces the `dist/` that `build-image` consumes. The release stage runs only on a SemVer tag whose commit is on the default branch.
+Three stages: `sast-and-test`, `build`, `release`. `eslint-and-test`, `semgrep-sast` and `trivy-sca` share the first stage and run in parallel — `build-image` waits for all three. The build happens inside `eslint-and-test`, which produces the `dist/` that `build-image` consumes. The release stage runs only on a SemVer tag whose commit is on the default branch.
  
 **What `airgap-release-import.sh` does:** 
 - verifies the bundle, commit, and tag validity
@@ -114,7 +115,12 @@ AZN only ever receives fast-forwarded commits from a verified bundle — it neve
  
 Versioning is decided on Internet (git tag `v*`) — the artifact that actually ships is always the one rebuilt fresh on AZN, never the one built during Internet CI.
  
-Releases use **`commit-and-tag-version`**, the maintained fork of `standard-version` (retired upstream in 2022). It is run through `npx`: `npx commit-and-tag-version` for Node repos, `npx commit-and-tag-version --packageFiles build.gradle` for Java services. 14 of the 19 repos document it, including all nine Java services. Java repos must drop the `-SNAPSHOT` suffix first, which the tool does not parse.
+Releases use **`commit-and-tag-version`**, not `standard-version`. Both Node and Java repos use it:
+ 
+```
+npx commit-and-tag-version                                  # Node repos
+npx commit-and-tag-version --packageFiles build.gradle      # Java repos
+```
  
  
 ---
