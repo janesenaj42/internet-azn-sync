@@ -1,7 +1,6 @@
 # Internet–AZN Git Sync
 
-*Correct as of 20 September 2026*
-
+*Correct as of 22 September 2026*
 
 ---
 
@@ -12,12 +11,12 @@ Scanning on Internet runs on free/OSS substitutes in place of AZN's paid enterpr
 | Area | AZN (On-Prem) | Internet | 
 | --- | --- | --- | 
 | Version control | GitLab Premium | GitLab Free* | 
-| Lint | ESLint | ESLint | 
+| Lint (frontend) | ESLint | ESLint | 
 | SAST | Fortify, Parasoft | Semgrep CE | 
 | SCA | Scantist | Trivy | 
 | Artifact / container registry | JFrog | GitLab Package/Container Registry | 
 
-*capped at 5 seats, alternatives being evaluated
+*capped at 5 seats, in midst of migrating to github
 
 **What Lint, SAST and SCA are:**
 - **Lint (ESLint)** checks code style and structure — catching formatting issues, unused variables, and common bug patterns — as source code is written. It's a code-quality check, not a security scan, and runs alongside SAST/SCA in CI.
@@ -39,25 +38,31 @@ Each repo now carries **two CI config files**: `.gitlab-ci.internet.yml` (runs o
 flowchart TD
     classDef ci fill:#eaf5f2,stroke:#2f8f82,color:#16233f
     classDef human fill:#eef1fb,stroke:#5b6fbd,color:#1f2a5c,stroke-dasharray:4 4
- 
+
+    P["push / merge request"]:::human
+    P --> Internet
     subgraph Internet["🌐 Internet — .gitlab-ci.internet.yml"]
         direction TB
-        I0["Lint"]:::ci --> I1["Build<br/>Gradle / npm"]:::ci
-        I1 --> I2["Semgrep<br/>SAST scan"]:::ci
-        I2 --> I3["Trivy<br/>SCA scan"]:::ci
-        I3 --> I4["Git Bundle<br/>release-bundle CI job"]:::ci
+        I0["Lint + unit tests + build"]:::ci
+        I1["Semgrep CE<br/>SAST scan"]:::ci
+        I2["Trivy<br/>SCA scan"]:::ci
+        I0 --> I3["Build image<br/>push to registry"]:::ci
+        I1 --> I3
+        I2 --> I3
+        I3 -- If SemVer tag --> I4["Git bundle"]:::ci
+        I4 --> I5["Attach bundle to<br/>GitLab Release"]:::ci
     end
  
-    I4 --> H1["Manual transfer via FG from Internet to AZN<br/>(air gap)"]:::human
+    I5 --> H1["Manual transfer via FG from Internet to AZN<br/>(air gap)"]:::human
     H1 --> H2["Run airgap-release-import.sh on AZN"]:::human
     H2 --> A0
  
     subgraph Anzen["🔒 Anzen — .gitlab-ci.yml"]
         direction TB
-        A0["Lint<br/>ESLint"]:::ci --> A1["Fortify / Parasoft<br/>SAST scan"]:::ci
+        A0["Lint"]:::ci --> A1["Fortify / Parasoft<br/>SAST scan"]:::ci
         A1 --> A1b["Scantist<br/>SCA scan"]:::ci
         A1b --> A2["Build<br/>Docker / npm / Maven"]:::ci
-        A2 --> A3["Deploy<br/>Anzen-built artifact ships"]:::ci
+        A2 --> A3["Build image<br/>push to registry"]:::ci
     end
  
     subgraph Legend["Legend"]
@@ -67,16 +72,17 @@ flowchart TD
     end
     style Legend fill:#f2f2f2,stroke:#9a9a9a,color:#333333
 ```
-
->[!WARNING]  ⚠️ **Open question:** pls update the mermaid diagram above with the correct ci jobs
  
 **What `airgap-release-import.sh` does:** 
 - verifies the bundle, commit, and tag validity
-- merges and fast-forwards the validated release into the AZN repository 
+- merges and fast-forwards the validated release into the AZN repository
+- **It is repo-agnostic.** There is one copy, in `webcore-compose/scripts/`.
+  ```
+  airgap-release-import.sh -C ~/repos/<any-repo> release-1.2.0.bundle
+  ```
+     - The one fixed assumption is the tag pattern `^v?[0-9]+\.[0-9]+\.[0-9]+$`, which matches the pattern the release job uses. Releases must stay on plain SemVer tags for the import to work.
  
->[!WARNING]  ⚠️ **Open question:** is `airgap-release-import.sh` repo-agnostic across all 19 repos, or does each repo need its own config? 
- 
-### Why the Git Trees Look Different
+### Why the Git Trees between Internet and AZN Look Different
  
 Internet carries full branch history. AZN stays a linear, read-only mirror advanced only by verified fast-forward merges.
  
@@ -98,41 +104,10 @@ main
  
 AZN only ever receives fast-forwarded commits from a verified bundle — it never grows its own branches. Internet keeps the full feature/release model needed for day-to-day development and review.
  
-### Final Release Process
- 
-Versioning is decided on Internet (git tag `v*`) — the artifact that actually ships is always the one rebuilt fresh on AZN, never the one built during Internet CI.
- 
->[!WARNING]  ⚠️ **Open question:**using `standard-version` for all repos?
- 
- 
 ---
  
-## 3. Migration & Run-Config Differences Required
+## 3. Current Status
  
-Internet-side repos need environment-specific tweaks so builds don't depend on AZN-only infrastructure.
- 
-| Area | Internet-side change | Why |
-| --- | --- | --- |
-| CI pipeline config | Separate `.gitlab-ci.internet.yml`, not the shared `ci-templates` include | AZN's `ci-templates` can't resolve outside the internal network |
-| Backend (`build.gradle` / Testcontainers) | Tests run with `-x test` (skipped) | Testcontainers needs a privileged/dind Docker daemon the Internet runner lacks |
-| Docker / docker-compose | Internal registry hostnames replaced or parameterized via `.env` toggles in `webcore-compose` | Internet runners can't resolve internal DNS (`jfrog.dev.saf`) |
-| Frontend (`.npmrc` / `package-lock.json`) | Internal `jfrog.dev.saf` registry URLs auto-stripped by the bootstrap import script | Prevents leaking internal hostnames into Internet git history |
- 
->[!WARNING]  ⚠️ **Open question:** I dont have access to internet gitlab now nor the claude artifact used to go through the internet dev stuff -- pls fill in where people can find the internet migration guides for `build.gradle`, `docker-compose`, and `.npmrc`. Intention is coz some config methodology stuff can share with other projects, not unique to gc3.
- 
----
- 
-## 4. Current Progress
- 
->[!WARNING] ⚠️ **Open question:** pls help confirm the info below then we can un-strike the below statement :(
+GC3 is currently developing on internet.
 
-~~GC3 is fully developing on internet now.~~
 
-| Category | % Done | Status |
-| --- | --- | --- |
-| Frontend / MFEs | 100% | All migrated |
-| Backend microservices | 20% | In progress — `cet-service`, `webcore-kafka-example` still outstanding |
-| Shared Java libraries | 0% | No Internet publish pipeline yet — still outstanding |
-| Infra & internal tooling | 100% |  All migrated |
-
->[!WARNING]  ⚠️ **Open question:** help confirm the above info pls
