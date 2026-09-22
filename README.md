@@ -75,7 +75,9 @@ flowchart TD
     style Legend fill:#f2f2f2,stroke:#9a9a9a,color:#333333
 ```
 
-The lint/test and the two scans share the first stage and run in parallel — the image build waits for all three. The bundle job runs only on a SemVer tag whose commit is on the default branch.
+The lint/test and the two scans share the first stage and run in parallel — the image build waits for all three.
+
+**Neither stack builds inside its Dockerfile.** Both compile in the pipeline and hand the result to the image as an artifact: the MFEs run `NODE_ENV=production npm run build` in `eslint-and-test` and the Dockerfile only does `COPY ./dist`, while the services run Gradle in `build-jar` and the Dockerfile only copies `build/libs/<service>-<version>.jar`. The artifact is therefore scannable before the image exists, which is what lets `build-image` gate on it. The bundle job runs only on a SemVer tag whose commit is on the default branch.
  
 Job names differ by stack. Frontend: `eslint-and-test`, `semgrep-sast`, `trivy-sca`, `build-image`, `release-bundle`, `release`. Backend: `build-jar`, `build-image`, `sast-semgrep`, `sca-deps`, `sca-config`, `sca-secret` — no bundle job yet. The three shared Java libraries are a third shape again: they include an Internet-hosted template and get `gradle-build`, `gradle-release`, `check-release-tag`, `release-bundle` and `release`.
  
@@ -138,11 +140,13 @@ Internet-side repos need environment-specific tweaks so builds don't depend on A
 | Docker / docker-compose | Internal registry hostnames replaced or parameterized via `.env` toggles in `webcore-compose` | Internet runners can't resolve internal DNS (`jfrog.dev.saf`) |
 | Frontend (`.npmrc` / `package-lock.json`) | `resolved` URLs stripped from the committed lockfile by a pre-commit hook | One lockfile resolves against either registry; a host-only rewrite fails because the internal registry adds a path segment |
  
+**Where to see the changes themselves:** every migrated repo carries the work as its first merge request, `!1 Internet CI migration`, so a team can read the diff rather than the description. Two repos are exceptions: `map-overlay`, whose `!1` is a proprietary-dependency removal, and `baseline-single-spa-essentials`, which went straight to `main`.
+
 **Where the migration guides are:** all three live in [`webcore-compose/docs/`](https://gitlab.com/dsta-webcore/webcore-compose/-/tree/main/docs) — [`getting-started.md`](https://gitlab.com/dsta-webcore/webcore-compose/-/blob/main/docs/getting-started.md) (Internet-side setup for npm, Gradle and compose), [`airgap.md`](https://gitlab.com/dsta-webcore/webcore-compose/-/blob/main/docs/airgap.md) (the air-gap side and the carry-across) and [`troubleshooting.md`](https://gitlab.com/dsta-webcore/webcore-compose/-/blob/main/docs/troubleshooting.md) (symptom → fix). `dsta-webcore` is a private group, so these open for members only.
  
 - **`.npmrc` / `package-lock.json`** — the committed lockfile has its `resolved` URLs stripped, so `npm ci` rebuilds each URL from whichever registry is configured and one lockfile works in both worlds. A host-only rewrite does not work, because the internal registry embeds an extra path segment. Enforced by `npm run lock:normalize` and a pre-commit hook in each frontend repo. Guide: [How packages resolve](https://gitlab.com/dsta-webcore/webcore-compose/-/blob/main/docs/getting-started.md#how-packages-resolve).
 - **`build.gradle`** — never edited. A Gradle init-script, `internet-init.gradle`, reroutes dependency resolution at invocation time; the guide below carries the exact invocation. The committed wrapper keeps pointing at the internal registry, so air-gap builds keep working and the rewrite is never committed. Guide: [Backend services (Java/Gradle)](https://gitlab.com/dsta-webcore/webcore-compose/-/blob/main/docs/getting-started.md).
-- **`docker-compose`** — three `.env` variables switch registries: `WEBCORE_REGISTRY`, `COTS_REGISTRY` and `EJABBERD_REPO`. `EJABBERD_REPO` is a whole image name rather than a prefix, so changing only the two registry variables leaves that one container failing. Guide: [The three overrides](https://gitlab.com/dsta-webcore/webcore-compose/-/blob/main/docs/airgap.md#the-three-overrides).
+- **`docker-compose`** — three `.env` variables switch registries: `WEBCORE_REGISTRY`, `COTS_REGISTRY` and `EJABBERD_REPO`. The first two are prefixes in front of a fixed image path, because `nginx` is `nginx` in both worlds. ejabberd is not: Docker Hub publishes it as `ejabberd/ecs` and the air-gap mirror holds it as `ejabberd/ejabberd`, so no prefix produces both and the whole `repo:tag` has to be the variable. Change only the two registry variables and that one container alone fails to pull. A second trap sits beside it: `COTS_REGISTRY` is read as `${COTS_REGISTRY-default}`, one dash, which substitutes only when the variable is **unset** — an empty value must stay empty to reach Docker Hub. Guide: [The three overrides](https://gitlab.com/dsta-webcore/webcore-compose/-/blob/main/docs/airgap.md#the-three-overrides).
  
 ---
  
