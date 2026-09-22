@@ -24,7 +24,7 @@ Scanning on Internet runs on free/OSS substitutes in place of AZN's paid enterpr
 - **SAST (Static Application Security Testing)** scans your own source code — without running it — to catch security bugs like injection flaws, hardcoded secrets, or unsafe API usage before the code ships.
 - **SCA (Software Composition Analysis)** scans your third-party dependencies (npm/Maven packages, base images, etc.) against known vulnerability databases (CVEs) to catch risky or outdated libraries you've pulled in.
 
-Semgrep and Trivy currently write their findings to pipeline artifacts and do not fail the pipeline. Gating is being added per repo, starting with CRITICAL-severity SCA findings.
+Gating differs by stack, and the difference is deliberate. The five MFE pipelines are advisory: `semgrep ci … || true` plus `allow_failure: true`, and Trivy runs with no `--exit-code`, so findings reach the artifacts and never fail a job. The eight backend pipelines already gate, with no `allow_failure` anywhere — Semgrep fails on any ERROR-severity finding, and Trivy fails on HIGH or CRITICAL in the fat jar, the config tree, the secret scan and the freshly built image. Each Trivy step runs twice, `--exit-code 0` to write the JSON artifact and `--exit-code 1` to gate, so the evidence survives the failure. `.trivyignore` carries the accepted exceptions.
 
 ---
  
@@ -77,7 +77,7 @@ flowchart TD
 
 The lint/test and the two scans share the first stage and run in parallel — the image build waits for all three. The bundle job runs only on a SemVer tag whose commit is on the default branch.
  
-Job names differ by stack. Frontend: `eslint-and-test`, `semgrep-sast`, `trivy-sca`, `build-image`, `release-bundle`, `release`. Backend: `build-jar`, `build-image`, `sast-semgrep`, `sca-deps`, `sca-config`, `sca-secret` — no bundle job yet.
+Job names differ by stack. Frontend: `eslint-and-test`, `semgrep-sast`, `trivy-sca`, `build-image`, `release-bundle`, `release`. Backend: `build-jar`, `build-image`, `sast-semgrep`, `sca-deps`, `sca-config`, `sca-secret` — no bundle job yet. The three shared Java libraries are a third shape again: they include an Internet-hosted template and get `gradle-build`, `gradle-release`, `check-release-tag`, `release-bundle` and `release`.
  
 **What `airgap-release-import.sh` does:** 
 - verifies the bundle, commit, and tag validity
@@ -133,7 +133,7 @@ Internet-side repos need environment-specific tweaks so builds don't depend on A
  
 | Area | Internet-side change | Why |
 | --- | --- | --- |
-| CI pipeline config | Separate `.gitlab-ci.internet.yml`, not the shared `ci-templates` include | AZN's `ci-templates` can't resolve outside the internal network |
+| CI pipeline config | Separate `.gitlab-ci.internet.yml`. The 13 application repos make it self-contained; the 3 shared libraries instead include an Internet-hosted template, `dsta-webcore/ci-templates` at ref `main-inet` | AZN's `webcore/ci-templates` cannot resolve outside the internal network |
 | Backend (`build.gradle` / Testcontainers) | `build.gradle` is **not** edited — an `internet-init.gradle` init-script reroutes resolution; tests run with `-x test` | Testcontainers needs a privileged Docker daemon the Internet runner's socket-binding executor cannot start |
 | Docker / docker-compose | Internal registry hostnames replaced or parameterized via `.env` toggles in `webcore-compose` | Internet runners can't resolve internal DNS (`jfrog.dev.saf`) |
 | Frontend (`.npmrc` / `package-lock.json`) | `resolved` URLs stripped from the committed lockfile by a pre-commit hook | One lockfile resolves against either registry; a host-only rewrite fails because the internal registry adds a path segment |
@@ -156,10 +156,10 @@ Building on Internet and shipping to AZN are separate capabilities, so they are 
 | --- | --- | --- | --- |
 | Frontend / MFEs | 5 of 5 | 5 of 5 | `baseline-single-spa-assets` is excluded: it has no pipeline on either side, so there is nothing to migrate |
 | Backend microservices | 7 of 8 | 0 of 8 | `webcore-kafka-example` is the one outstanding: it still runs the AZN `.gitlab-ci.yml` and has no Internet pipeline. |
-| Shared Java libraries | 0 | 0 | No Internet publish pipeline yet |
+| Shared Java libraries | 3 of 3 | 1 of 3 | All three build and publish to the Internet Maven registry. Only `webcore-common-utils-servlet` has a release with a bundle attached; `webcore-common-utils-core` and `webcore-test-utils` were last tagged 16 Sep, before the template gained its release jobs |
 | Infra & internal tooling | 1 of 1 | 1 of 1 | All migrated |
 
-Release-to-AZN bundling is live for the MFEs and infra tooling. Backend services and the shared Java libraries still need a bundle job before they can cross the air gap.
+Release-to-AZN bundling is live for the MFEs, infra tooling and one of the three shared libraries. The eight backend services are the gap: none has a `release-bundle` job, so none can cross the air gap yet.
 
 `cet-service` is retired and heading for an archived subgroup, so it is not counted.
 
